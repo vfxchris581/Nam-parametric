@@ -17,7 +17,7 @@ jobs:
     name: Core tests (Linux)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPNAM_BUILD_APP=OFF
       - name: Build
@@ -34,17 +34,17 @@ jobs:
     runs-on: ubuntu-24.04
     needs: core-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPNAM_BUILD_APP=OFF
       - run: cmake --build build -j4 --target pnam_core_tests
       - run: ./build/Tests/pnam_core_tests parametric_training_predicts_unseen_settings
 
   macos:
     name: macOS (universal) app + DMG
-    runs-on: macos-14
+    runs-on: macos-15
     needs: core-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: >
           cmake -S . -B build -G Xcode
@@ -79,7 +79,7 @@ jobs:
     runs-on: windows-2022
     needs: core-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
       - name: Build
@@ -106,7 +106,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: core-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Dependencies
         run: |
           sudo apt-get update

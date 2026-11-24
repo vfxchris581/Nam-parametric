@@ -69,7 +69,8 @@ TEST(resampler_passband_stopband_and_latency)
     std::vector<float> x(96000), y(60000);
     for (size_t i = 0; i < x.size(); ++i) x[i] = (float) std::sin(2 * M_PI * 30000.0 * i / 96000.0);
     int n = 0;
-    for (size_t p = 0; p < x.size(); p += 1024) n += down.process(x.data() + p, 1024, y.data() + n, (int) y.size() - n);
+    for (size_t p = 0; p < x.size(); p += 1024)
+        n += down.process(x.data() + p, (int) std::min<size_t>(1024, x.size() - p), y.data() + n, (int) y.size() - n);
     const double alias = pnam::goertzelAmplitude(y.data() + 4000, (size_t) n - 8000, 18000.0, 48000.0);
     std::printf("    30 kHz at 96k -> 48k: alias at 18 kHz %.1f dB\n", 20 * std::log10(alias + 1e-12));
     CHECK(20 * std::log10(alias + 1e-12) < -70);
