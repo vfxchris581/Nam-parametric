@@ -1,0 +1,81 @@
+#pragma once
+// Adapted from the ParametricWaveNet reference loader in parametric-nam
+// (https://github.com/jojopas/parametric-nam, MIT License, Copyright (c) 2026 Murphy Research, LLC).
+// See THIRD_PARTY_NOTICES.md. Change: namespace renamed to pnam.
+// A parametric capture: a NAM WaveNet whose conditioning input is the audio
+// plus N knob values (0..1) held constant over each block. The knobs' effect
+// is learned at training time (PANAMA-style: one recording per knob setting),
+// so the same model plays every setting of the amp it was captured from.
+//
+// File format: a standard .nam JSON with architecture "ParametricWaveNet"
+// (files written before the format went public say "CoroParametricWaveNet"; both load).
+// `config.knobs` lists the knobs (name, default); every layer's condition_size
+// and the first layer's input_size are 1 + knobs. Rows 1..N of the condition
+// are the knobs. Other NAM hosts refuse the architecture instead of mis-wiring
+// it. parametric_nam/convert_panama.py writes this format; SPEC.md describes it.
+//
+// An optional top-level "knob_scale" (SPEC.md) also scales each layer by the knobs: per channel,
+// the conv output, its bias and the knob shift are multiplied by (1 + S . knobs). With the knobs
+// constant over a block that is the same as scaling those weights, so when a knob moves the
+// next block rewrites them once (allocation-free) and NAM core runs the result unchanged.
+#include <array>
+#include <atomic>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <NAM/dsp.h>
+#include <NAM/wavenet/model.h>
+
+namespace pnam
+{
+class ParametricWaveNet : public nam::wavenet::WaveNet
+{
+public:
+    static constexpr const char* kArchitecture = "ParametricWaveNet";
+    static constexpr const char* kLegacyArchitecture = "CoroParametricWaveNet";
+    static constexpr int kMaxKnobs = 8;
+
+    struct Knob
+    {
+        std::string name;
+        float def = 0.5f;
+        std::vector<std::string> labels; // a stepped switch: one label per position; empty for a pot
+    };
+
+    static bool isParametric(const nlohmann::json& model);
+    // Builds the model or throws std::runtime_error saying what is wrong.
+    static std::unique_ptr<ParametricWaveNet> fromJson(const nlohmann::json& model);
+
+    int knobCount() const { return (int) knobs_.size(); }
+    const Knob& knob(int i) const { return knobs_[(size_t) i]; }
+    // Any thread. Clamped to 0..1; the audio thread picks it up on its next block.
+    void setKnob(int i, float v01);
+    float knobValue(int i) const { return values_[(size_t) i].load(std::memory_order_relaxed); }
+
+protected:
+    int _get_condition_dim() const override { return NumInputChannels() + knobCount(); }
+    void _set_condition_array(NAM_SAMPLE** input, const int num_frames) override;
+
+private:
+    void readKnobScale(const nlohmann::json& model, const nlohmann::json& config);
+    void foldScale();
+
+    ParametricWaveNet(nam::wavenet::WaveNetConfig& cfg, std::vector<float> weights,
+                      std::vector<Knob> knobs, double sampleRate);
+    std::vector<Knob> knobs_;
+    std::array<std::atomic<float>, kMaxKnobs> values_ {};
+
+    // knob_scale: per layer, where its conv weights / bias / input_mixin sit in the weights,
+    // and its scale rows (channels x knobs, row-major) in scale_
+    struct ScaledLayer
+    {
+        size_t conv, bias, mixin, scale;
+        int channels, kernel;
+    };
+    std::vector<ScaledLayer> scaled_;
+    std::vector<float> scale_, base_, work_;
+    std::array<float, kMaxKnobs> folded_ {};
+    bool foldedOnce_ = false;
+};
+} // namespace pnam

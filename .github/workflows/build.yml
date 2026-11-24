@@ -1,0 +1,144 @@
+name: Build, test and package
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Engine, trainer, libraries and real-time chain - no GUI. Fast feedback on every push.
+  core-tests:
+    name: Core tests (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPNAM_BUILD_APP=OFF
+      - name: Build
+        run: cmake --build build -j4
+      - name: Test (fast)
+        env:
+          PNAM_FAST_TESTS: "1"
+        run: ./build/Tests/pnam_core_tests
+
+  # The closed-loop accuracy test: trains a real parametric model from 9 captures and checks it
+  # predicts 3 unseen settings better than switching to the nearest captured snapshot.
+  training-accuracy:
+    name: Parametric training accuracy
+    runs-on: ubuntu-24.04
+    needs: core-tests
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPNAM_BUILD_APP=OFF
+      - run: cmake --build build -j4 --target pnam_core_tests
+      - run: ./build/Tests/pnam_core_tests parametric_training_predicts_unseen_settings
+
+  macos:
+    name: macOS (universal) app + DMG
+    runs-on: macos-14
+    needs: core-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Xcode
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+      - name: Build
+        run: cmake --build build --config Release -j4
+      - name: Test
+        env:
+          PNAM_FAST_TESTS: "1"
+        run: ./build/Tests/Release/pnam_core_tests
+      - name: Sign (ad-hoc unless a Developer ID is configured)
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          APP="build/Source/ParametricNAMStudio_artefacts/Release/Parametric NAM Studio.app"
+          codesign --force --deep --options runtime --sign "${MACOS_SIGN_IDENTITY:--}" "$APP"
+          codesign --verify --verbose "$APP"
+      - name: DMG
+        run: |
+          bash Build/installer/make_dmg.sh \
+            "build/Source/ParametricNAMStudio_artefacts/Release/Parametric NAM Studio.app" \
+            "build/Source/cli/Release/pnam" \
+            "ParametricNAMStudio-macOS.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ParametricNAMStudio-macOS
+          path: ParametricNAMStudio-macOS.dmg
+
+  windows:
+    name: Windows app + installer
+    runs-on: windows-2022
+    needs: core-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build build --config Release -j4
+      - name: Test
+        env:
+          PNAM_FAST_TESTS: "1"
+        run: .\build\Tests\Release\pnam_core_tests.exe
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
+          & $iscc /DAppVersion=$(Get-Content VERSION) Build\installer\windows.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ParametricNAMStudio-Windows
+          path: Build/installer/Output/*.exe
+
+  # Builds the Linux app (development only) and renders every page to PNG with real demo content.
+  screenshots:
+    name: Screenshots (Linux, headless)
+    runs-on: ubuntu-24.04
+    needs: core-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev \
+            libgl1-mesa-dev xvfb
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPNAM_BUILD_TESTS=OFF -DPNAM_LINUX_AUDIO=ON
+      - run: cmake --build build -j4
+      - name: Demo content and screenshots
+        run: |
+          export XDG_DATA_HOME="$RUNNER_TEMP/demo"
+          python3 Build/make_demo_content.py build/Source/cli/pnam "$XDG_DATA_HOME/ParametricNAMStudio" --steps 3000
+          xvfb-run -s "-screen 0 1600x1000x24" "build/Source/ParametricNAMStudio_artefacts/Release/Parametric NAM Studio" --screenshots "$RUNNER_TEMP/shots"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/shots/*.png
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows, training-accuracy]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ParametricNAMStudio-macOS/*.dmg
+            dist/ParametricNAMStudio-Windows/*.exe
+          generate_release_notes: true
